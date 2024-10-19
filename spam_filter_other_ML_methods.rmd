@@ -1,0 +1,207 @@
+
+```{r}
+# Function to calculate the misclassification rate based on predictions and true labels
+misClass =function(predClass,trueClass,produceOutput=FALSE){
+  confusionMat = table(predClass,trueClass)
+  if(produceOutput){
+    return(1-sum(diag(confusionMat))/sum(confusionMat))
+  }
+  else{
+    print('misclass')
+    print(1-sum(diag(confusionMat))/sum(confusionMat))
+    print('confusion mat')
+    print(confusionMat)
+  }
+}
+```
+
+```{r}
+# Load necessary libraries for random forest and gradient boosting methods
+require(randomForest)
+require(gbm)
+```
+
+```{r}
+# Load the spam dataset
+load("spam.Rdata")
+```
+
+```{r}
+# Split data into training and testing sets
+train = spam$train
+test  = !train
+X     = spam$XdataF[train,]
+X_0   = spam$XdataF[test,]
+Y     = factor(spam$Y[train])
+Y_0   = factor(spam$Y[test])
+```
+
+```{r}
+# Function to iteratively add trees to a random forest until OOB error rate stabilizes
+checkNumberItersF = function(ntrees = 5, tolParm = 1, maxIter = 10, verbose = 0){
+  misClassOut   = list()
+  totalTreesOut = list()
+  
+  n              = nrow(X)
+  votes          = matrix(0,nrow=n,ncol=2)
+  totalTrees     = 0
+  iterations     = 0
+  misClassOld   = 1
+  while(iterations < maxIter){
+    votes[is.nan(votes)] = 0
+    iterations    = iterations + 1
+    totalTrees    = totalTrees + ntrees
+    if(verbose >= 2){cat('Total trees: ',totalTrees,'\n')}
+    outRf        = randomForest(X, Y,ntree = ntrees)
+    
+    oob.times        = outRf$oob.times
+    votes_iterations = outRf$votes*oob.times
+    votes[oob.times>0,] = matrix(votes + votes_iterations,nrow=n)[oob.times>0,]
+    if(min(apply(votes,1,sum)) == 0){next}
+    
+    Yhat          = apply(votes,1,which.max) - 1
+    misClassNew  = misClass(Yhat,Y,produceOutput = TRUE)
+    misClassOut[[iterations]]   = misClassNew
+    totalTreesOut[[iterations]] = totalTrees
+    percentChange = 100*(misClassNew - misClassOld)/misClassOld
+    if(verbose >= 1){cat('% change: ',percentChange,'\n')}
+    if(percentChange > -tolParm){break}
+    misClassOld = misClassNew
+  }
+  if(iterations == maxIter){
+    stop("too many iterations, try a larger ntrees or maxIter value")
+  }
+  return(list('misClass' = unlist(misClassOut),
+              'totalTree' = unlist(totalTreesOut)))
+}
+```
+
+```{r}
+# Set seed and run the function to find the optimal number of iterations
+set.seed(1)
+checkNumberIters = checkNumberItersF(ntrees = 5, tolParm = 1, maxIter = 20, verbose = 1)
+```
+
+```{r}
+# Fit random forest with the optimal number of trees and calculate metrics
+ntrees = max(checkNumberIters$totalTree)
+outRf  = randomForest(X, Y, ntree = ntrees, importance = T, proximity=T)
+n              = nrow(X)
+confMat <- outRf$confusion
+testError <- (confMat[2]+confMat[3])/n
+precision <- confMat[1]/(confMat[1]+confMat[3])
+recall <- confMat[1]/(confMat[1]+confMat[2])
+specificity <-confMat[4]/(confMat[3]+confMat[4]) 
+```
+
+```{r}
+# Plot variable importance for the random forest model
+mostImpFeature <- names(X)[which.max(importance(outRf, type=2))]
+varImpPlot(outRf, type=2)
+```
+
+```{r boostingLoop, cache = TRUE}
+# Perform boosting using gbm with different parameter values and evaluate performance
+lambdaGrid            = c(.0001,.1,1,10)
+interaction.depthGrid = c(4,6,10)
+n.treesGrid           = c(500,1000,2000)
+resultsGrid           = array(0,dim=c(length(lambdaGrid), 
+                                      length(interaction.depthGrid),
+                                      length(n.treesGrid)),
+                              dimnames = list('lambda'=as.character(lambdaGrid),
+                                              'interaction'=as.character(interaction.depthGrid),
+                                              'n.trees'=as.character(n.treesGrid)))
+resultsBoost          = list('bernoulli' = resultsGrid,
+                             'adaboost'  = resultsGrid)
+
+set.seed(1)
+verbose = 0
+Ychar   = as.character(Y) 
+Ychar_0 = as.character(Y_0)
+for(distribution in c('bernoulli','adaboost')){
+  lamIter = 0
+  for(lambda in lambdaGrid){
+    lamIter = lamIter + 1
+    intIter = 0
+    for(interaction.depth in interaction.depthGrid){
+      intIter  = intIter + 1
+      treeIter = 0
+      for(n.trees in n.treesGrid){
+        treeIter = treeIter + 1
+        boostOut = gbm(Ychar~.,data=X,
+                        n.trees=n.trees, interaction.depth=interaction.depth,
+                        shrinkage=lambda, distribution = distribution)
+        fHat  = predict(boostOut,X_0,n.trees=n.trees)
+        Yhat = rep(0,nrow(X_0))
+        Yhat[fHat > 0] = 1
+        
+        Yhat = as.factor(Yhat)
+        if(verbose > 0){
+        cat('lambda = ',lambda,' interaction.depth = ',interaction.depth, ' lambda = ',lambda,' n.trees = ',n.trees,'\n')
+        }
+        if(verbose > 1){
+          misClass(Yhat,Ychar_0)
+        }
+        resultsBoost[[distribution]][lamIter,intIter,treeIter] = misClass(Yhat,Ychar_0, produceOutput = TRUE)
+      }
+    }
+  }
+}
+
+resultsBoost
+```
+
+```{r, cache=T}
+# Compare bagging and boosting methods with different number of trees
+numTree <- 10
+Boost_test_error <- c()
+Boost_train_error <- c()
+Bag_test_error <- c()
+Bag_train_error <- c()
+Ychar   = as.character(Y)
+Ychar_0 = as.character(Y_0)
+boostOut = gbm(Ychar~.,data=X,
+                        n.trees=1000, interaction.depth=4,
+                        shrinkage=0.1, distribution = "bernoulli")
+
+while (numTree<1000){
+  numTree=numTree+10
+  fHat_test  = predict(boostOut,X_0,n.trees=numTree)
+  Yhat_test = rep(0,nrow(X_0))
+  Yhat_test[fHat_test > 0] = 1
+  Yhat_test = as.factor(Yhat_test)
+  Boost_test_error <- append(Boost_test_error,misClass(Yhat_test,Ychar_0,T))
+  fHat_train  = predict(boostOut,X,n.trees=numTree)
+  Yhat_train = rep(0,nrow(X))
+  Yhat_train[fHat_train > 0] = 1
+  Yhat_train = as.factor(Yhat_train)
+  Boost_train_error <- append(Boost_train_error,misClass(Yhat_train,Ychar,T))
+  
+  
+  OutRF <- randomForest(X, Y,ntree = numTree)
+  Yhat_test <- predict(OutRF,X_0,type="response")
+  Yhat_test = as.factor(Yhat_test)
+  Bag_test_error <- append(Bag_test_error,misClass(Yhat_test,Ychar_0,T))
+  Yhat_train <- predict(OutRF,X,type="response")
+  Yhat_train = as.factor(Yhat_train)
+  Bag_train_error <- append(Bag_train_error,misClass(Yhat_train,Ychar,T))
+  
+}
+```
+
+```{r}
+# Plot the misclassification rates for bagging vs boosting
+plot(Boost_train_error,type = "l",col="red", pch="*", xlab = "Number of trees", ylab = "Misclassification rate",
+     main = "Bagging Vs. Boosting", x = seq(10,990,10))
+lines(Boost_test_error, type="l", col="red",lty=2,x = seq(10,990,10))
+lines(Bag_train_error, type="l", col="blue",pch="*",x = seq(10,990,10))
+lines(Bag_test_error, type="l", col="blue",lty=2,x = seq(10,990,10))
+legend(750, 0.075, legend=c("Boosting (train)", "Boosting (test)","Bagging (train)","Bagging (test)"),
+       col=c("red", "red", "blue","blue"), lty=c(1,2,1,2), cex=0.8)
+```
+
+```{r}
+# Get the most important features from boosting model
+Summary <- summary(boostOut, n.trees=1000)
+Summary$var[1:3]
+```
