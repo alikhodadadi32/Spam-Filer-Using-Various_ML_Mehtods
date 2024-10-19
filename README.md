@@ -1,4 +1,4 @@
-# Project: Spam Filter Using Bagging, Random Forest, and Boosting
+# Project: Spam Filter Using PCA, Bagging, Random Forest, and Boosting
 
 ## Description
 This repository contains the implementation of a spam filter using various machine learning algorithms including PCA, bagging, random forest, and boosting. The feature matrix includes individual emails with features representing the count of words or characters, as well as numerical measures regarding capital letters.
