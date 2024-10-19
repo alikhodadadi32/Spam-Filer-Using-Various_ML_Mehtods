@@ -1,0 +1,99 @@
+# Load necessary packages
+
+This chunk loads the necessary libraries for graphical modeling and data manipulation.
+```{r}
+require(igraph)
+require(dplyr)
+```
+
+
+# Read in spam data
+This chunk reads in the spam data, which contains a feature matrix for analysis.
+```{r}
+load('spam.Rdata')
+Xfull = spam$XdataF
+```
+
+
+# Remove the 'word' features
+Here, we remove the word features and retain only punctuation and capitalization features for further analysis.
+```{r}
+X = Xfull %>% select(contains('punc'), contains('cap'))
+
+n = dim(X)[1]
+p = dim(X)[2]
+```
+
+# Graphical models: Bootstrap estimation
+This chunk estimates a partial correlation graph using bootstrapping. It draws an edge between nodes if 0 is not within the bootstrap confidence interval.
+```{r}
+B = 500
+Rhat_starOutput = array(dim = c(p, p, B))
+for (b in 1:B) {
+  bootSamp = sample(1:n, n, replace = TRUE)
+  X_star = X[bootSamp, ]
+  S_star = cov(X_star)
+  OmegaHat_star = solve(S_star)
+  Rhat_star = -diag(1 / sqrt(diag(OmegaHat_star))) %*% OmegaHat_star %*% diag(1 / sqrt(diag(OmegaHat_star)))
+  Rhat_starOutput[, , b] = Rhat_star
+}
+
+apply(Rhat_starOutput, c(1, 2), quantile, 0.005)[1:5, 1:5]
+apply(Rhat_starOutput, c(1, 2), quantile, 0.995)[1:5, 1:5]
+
+noedge = apply(Rhat_starOutput, c(1, 2), quantile, 0.005) < 0 & apply(Rhat_starOutput, c(1, 2), quantile, 0.995) > 0
+g = graph.adjacency(!noedge, mode = "undirected", diag = FALSE)
+plot(g, layout = layout.auto, vertex.color = 'white', vertex.size = 3, vertex.label = names(X), vertex.frame.color = NA)
+```
+
+
+# Multivariate normality investigation
+This chunk investigates the multivariate normality of the data using QQ plots, both for individual features and for a multivariate statistic.
+```{r}
+par(mfrow = c(3, 3))
+for (j in 1:p) {
+  qqnorm(X[, j], main = colnames(X)[j], xlab = "Theoretical Quantiles", ylab = "Sample Quantiles")
+  qqline(X[, j], col = 'red', probs = c(0.25, 0.75))
+}
+
+alp = (p - 2) / (2 * p)
+bet = (n - p - 3) / (2 * (n - p - 1))
+a = p / 2
+b = (n - p - 1) / 2
+probs = (1:n - alp) / (n - alp - bet + 1)
+quantiles = qbeta(probs, a, b)
+X_center = scale(X, center = TRUE, scale = FALSE)
+D <- c()
+for (i in 1:n) {
+  D[i] <- t(X_center[i, ]) %*% solve(cov(X)) %*% X_center[i, ]
+}
+u <- (n * D) / (n - 1)^2
+par(mfrow = c(1, 1))
+plot(quantiles, sort(u), type = 'l', xlab = 'beta quantile', ylab = 'sample quantile')
+```
+
+
+# PCA analysis: Scree plot
+This chunk performs a Principal Component Analysis (PCA) on the stock prices dataset and creates a scree plot to visualize the proportion of variance explained by each principal component.
+```{r}
+StockPrices <- read.csv("stock_prices.csv")
+pca_out <- prcomp(scale(StockPrices, center = TRUE, scale = FALSE))
+plot(seq(1, length(pca_out$sdev)), cumsum((pca_out$sdev)^2 / sum((pca_out$sdev)^2)), type = "l", xlab = "Components", ylab = "Variance")
+```
+
+
+# PCA analysis: Scatter plot of principal components
+Here, we create a scatter plot of the first two principal component scores to explore the relationships between the components.
+```{r}
+plot(pca_out$x[, 1], pca_out$x[, 2], xlab = "PCA_1", ylab = "PCA_2", type = "p")
+```
+
+
+# PCA analysis: Scaled vs Unscaled
+This chunk runs PCA again with scaled data and compares the percentage of variance explained by the principal components in the scaled versus unscaled data.
+```{r}
+pca_out_scaled <- prcomp(scale(StockPrices, center = TRUE, scale = TRUE))
+percVarExplainedUnscaled = sum((pca_out$sdev[1:nPCs])^2 / sum((pca_out$sdev)^2))
+percVarExplainedScaled = sum((pca_out_scaled$sdev[1:nPCs])^2 / sum((pca_out_scaled$sdev)^2))
+```
+
